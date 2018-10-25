@@ -11,6 +11,7 @@ from sklearn import metrics
 import tensorflow as tf
 from tensorflow.python.data import Dataset
 
+
 tf.logging.set_verbosity(tf.logging.ERROR)
 pd.options.display.max_rows = 10
 pd.options.display.float_format = '{:.1f}'.format
@@ -38,18 +39,18 @@ def my_input_fn(features, targets, batch_size=1, shuffle=True, num_epochs=None):
     Returns:
       Tuple of (features, labels) for next data batch
     """
-  
+
     # Convert pandas data into a dict of np arrays.
-    features = {key:np.array(value) for key,value in dict(features).items()}                                           
- 
+    features = {key:np.array(value) for key,value in dict(features).items()}
+
     # Construct a dataset, and configure batching/repeating.
     ds = Dataset.from_tensor_slices((features,targets)) # warning: 2GB limit
     ds = ds.batch(batch_size).repeat(num_epochs)
-    
+
     # Shuffle the data, if specified.
     if shuffle:
       ds = ds.shuffle(buffer_size=10000)
-    
+
     # Return the next batch of data.
     features, labels = ds.make_one_shot_iterator().get_next()
     return features, labels
@@ -57,11 +58,11 @@ def my_input_fn(features, targets, batch_size=1, shuffle=True, num_epochs=None):
 # Filter out rows where time to review is null
 filtered_pull_requests_dataframe = pull_requests_dataframe[pull_requests_dataframe['time_to_review_in_minutes'].notnull()]
 
-# Define the input feature: size (additions + deletions). 
-my_feature = filtered_pull_requests_dataframe[["size"]]
+# Define the input feature: size (additions + deletions).
+my_feature = filtered_pull_requests_dataframe[["time_to_review_in_minutes"]]
 
 # Configure a numeric feature column for time_to_review_in_minutes.
-feature_columns = [tf.feature_column.numeric_column("size")]
+feature_columns = [tf.feature_column.numeric_column("time_to_review_in_minutes")]
 
 # Define the label.
 targets = filtered_pull_requests_dataframe["time_to_review_in_minutes"]
@@ -82,8 +83,15 @@ _ = linear_regressor.train(
     steps=500
 )
 
+def serving_input_fn():
+    feature = tf.convert_to_tensor(my_feature)
+    inputs = {'time_to_review_in_minutes': feature}
+    return tf.estimator.export.ServingInputReceiver(inputs, inputs)
+
+# linear_regressor.export_savedmodel("/tmp", serving_input_fn, as_text=True)
+
 # Create an input function for predictions.
-# Note: Since we're making just one prediction for each example, we don't 
+# Note: Since we're making just one prediction for each example, we don't
 # need to repeat or shuffle the data here.
 prediction_input_fn =lambda: my_input_fn(my_feature, targets, num_epochs=1, shuffle=False)
 
@@ -114,7 +122,7 @@ weight = linear_regressor.get_variable_value('linear/linear_model/size/weights')
 bias = linear_regressor.get_variable_value('linear/linear_model/bias_weights')
 
 # Get the predicted median_house_values for the min and max total_rooms values.
-y_0 = weight * x_0 + bias 
+y_0 = weight * x_0 + bias
 y_1 = weight * x_1 + bias
 
 # Plot our regression line from (x_0, y_0) to (x_1, y_1).
