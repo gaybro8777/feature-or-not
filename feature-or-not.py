@@ -26,6 +26,32 @@ pull_requests_dataframe["body_char_count"] = (
 
 relevant_features = ['additions_count', 'deletions_count', 'changed_files_count', 'body_char_count', 'time_to_review_in_minutes']
 
+def linear_scale(series):
+  min_val = series.min()
+  max_val = series.max()
+  scale = (max_val - min_val) / 2.0
+  return series.apply(lambda x:((x - min_val) / scale) - 1.0)
+
+def log_normalize(series):
+  return series.apply(lambda x:math.log(x+1.0))
+
+def z_score_normalize(series):
+  mean = series.mean()
+  std_dv = series.std()
+  return series.apply(lambda x:(x - mean) / std_dv)
+
+def normalize(examples_dataframe):
+  """Returns a version of the input `DataFrame` that has all its features normalized."""
+  processed_features = pd.DataFrame()
+
+  processed_features['additions_count'] = log_normalize(examples_dataframe['additions_count'])
+  processed_features['deletions_count'] = log_normalize(examples_dataframe['deletions_count'])
+  processed_features['changed_files_count'] = linear_scale(examples_dataframe['changed_files_count'])
+  processed_features['body_char_count'] = linear_scale(examples_dataframe['body_char_count'])
+  processed_features['time_to_review_in_minutes'] = log_normalize(examples_dataframe['time_to_review_in_minutes'])
+
+  return processed_features
+
 # Filter out rows where relevant features are null
 pull_requests_dataframe = pull_requests_dataframe.dropna(subset=(['cycle_time_in_days'] + relevant_features))
 
@@ -125,24 +151,26 @@ def construct_feature_columns(input_features):
   return set([tf.feature_column.numeric_column(my_feature)
               for my_feature in input_features])
 
-def train_model(
-    learning_rate,
+def train_nn_regression_model(
+    my_optimizer,
     steps,
     batch_size,
+    hidden_units,
     training_examples,
     training_targets,
     validation_examples,
     validation_targets):
-  """Trains a linear regression model of multiple features.
+  """Trains a neural network regression model.
   
   In addition to training, this function also prints training progress information,
   as well as a plot of the training and validation loss over time.
   
   Args:
-    learning_rate: A `float`, the learning rate.
+    my_optimizer: An instance of `tf.train.Optimizer`, the optimizer to use.
     steps: A non-zero `int`, the total number of training steps. A training step
       consists of a forward and backward pass using a single batch.
     batch_size: A non-zero `int`, the batch size.
+    hidden_units: A `list` of int values, specifying the number of neurons in each layer.
     training_examples: A `DataFrame` containing one or more columns from
       `california_housing_dataframe` to use as input features for training.
     training_targets: A `DataFrame` containing exactly one column from
@@ -153,18 +181,18 @@ def train_model(
       `california_housing_dataframe` to use as target for validation.
       
   Returns:
-    A `LinearRegressor` object trained on the training data.
+    A `DNNRegressor` object trained on the training data.
   """
 
   periods = 10
   steps_per_period = steps / periods
   
-  # Create a linear regressor object.
-  my_optimizer = tf.train.GradientDescentOptimizer(learning_rate=learning_rate)
+  # Create a DNNRegressor object.
   my_optimizer = tf.contrib.estimator.clip_gradients_by_norm(my_optimizer, 5.0)
-  linear_regressor = tf.estimator.LinearRegressor(
+  dnn_regressor = tf.estimator.DNNRegressor(
       feature_columns=construct_feature_columns(training_examples),
-      optimizer=my_optimizer
+      hidden_units=hidden_units,
+      optimizer=my_optimizer,
   )
   
   # Create input functions.
@@ -190,15 +218,15 @@ def train_model(
   validation_rmse = []
   for period in range (0, periods):
     # Train the model, starting from the prior state.
-    linear_regressor.train(
+    dnn_regressor.train(
         input_fn=training_input_fn,
-        steps=steps_per_period,
+        steps=steps_per_period
     )
     # Take a break and compute predictions.
-    training_predictions = linear_regressor.predict(input_fn=predict_training_input_fn)
+    training_predictions = dnn_regressor.predict(input_fn=predict_training_input_fn)
     training_predictions = np.array([item['predictions'][0] for item in training_predictions])
     
-    validation_predictions = linear_regressor.predict(input_fn=predict_validation_input_fn)
+    validation_predictions = dnn_regressor.predict(input_fn=predict_validation_input_fn)
     validation_predictions = np.array([item['predictions'][0] for item in validation_predictions])
     
     # Compute training and validation loss.
@@ -217,7 +245,7 @@ def train_model(
   calibration_data = pd.DataFrame()
   calibration_data["predictions"] = pd.Series(training_predictions)
   calibration_data["targets"] = pd.Series(training_targets["cycle_time_in_minutes"])
-  print(calibration_data.describe())
+  #  print(calibration_data.describe())
 
   # Plot predicted vs. actual
   plt.title("Predictions vs. Actual")
@@ -227,31 +255,35 @@ def train_model(
   plt.savefig("/tmp/fig.png")
 
   # Output model bias + weights
-  print([(v, linear_regressor.get_variable_value(v)) for v in linear_regressor.get_variable_names()])
+  #  print([(v, dnn_regressor.get_variable_value(v)) for v in dnn_regressor.get_variable_names()])
 
-  return linear_regressor
+  return dnn_regressor
 
 """
 End helper fns
 """
+# Normalize features
+normalized_pull_requests_dataframe = normalize(preprocess_features(pull_requests_dataframe))
+
 # Set up training + validation examples
-training_examples = preprocess_features(pull_requests_dataframe.head(2000))
-print(training_examples.describe())
+normalized_training_examples = preprocess_features(normalized_pull_requests_dataframe.head(2000))
+print(normalized_training_examples.describe())
 
 training_targets = preprocess_targets(pull_requests_dataframe.head(2000))
 print(training_targets.describe())
 
-validation_examples = preprocess_features(pull_requests_dataframe.tail(500))
-print(validation_examples.describe())
+normalized_validation_examples = preprocess_features(normalized_pull_requests_dataframe.tail(500))
+print(normalized_validation_examples.describe())
 
 validation_targets = preprocess_targets(pull_requests_dataframe.tail(500))
 print(validation_targets.describe())
 
-linear_regressor = train_model(
-    learning_rate=0.00001,
+dnn_regressor = train_nn_regression_model(
+    my_optimizer=tf.train.GradientDescentOptimizer(learning_rate=0.01),
     steps=5000,
     batch_size=200,
-    training_examples=training_examples,
+    hidden_units=[6, 6],
+    training_examples=normalized_training_examples,
     training_targets=training_targets,
-    validation_examples=validation_examples,
+    validation_examples=normalized_validation_examples,
     validation_targets=validation_targets)
