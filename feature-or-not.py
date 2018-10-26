@@ -144,10 +144,11 @@ def construct_feature_columns(input_features):
   return set([tf.feature_column.numeric_column(my_feature)
               for my_feature in input_features])
 
-def train_linear_classifier_model(
+def train_nn_classifier_model(
     learning_rate,
     steps,
     batch_size,
+    hidden_units,
     training_examples,
     training_targets,
     validation_examples,
@@ -162,6 +163,7 @@ def train_linear_classifier_model(
     steps: A non-zero `int`, the total number of training steps. A training step
       consists of a forward and backward pass using a single batch.
     batch_size: A non-zero `int`, the batch size.
+    hidden_units: A `list` of int values, specifying the number of neurons in each layer.
     training_examples: A `DataFrame` containing one or more columns from
       `pull_requests_dataframe` to use as input features for training.
     training_targets: A `DataFrame` containing exactly one column from
@@ -181,8 +183,9 @@ def train_linear_classifier_model(
   # Create a linear classifier object.
   my_optimizer = tf.train.GradientDescentOptimizer(learning_rate=learning_rate)
   my_optimizer = tf.contrib.estimator.clip_gradients_by_norm(my_optimizer, 5.0)
-  linear_classifier = tf.estimator.LinearClassifier(
+  dnn_classifier = tf.estimator.DNNClassifier(
       feature_columns=construct_feature_columns(training_examples),
+      hidden_units=hidden_units,
       optimizer=my_optimizer
   )
   
@@ -207,15 +210,15 @@ def train_linear_classifier_model(
   validation_log_losses = []
   for period in range (0, periods):
     # Train the model, starting from the prior state.
-    linear_classifier.train(
+    dnn_classifier.train(
         input_fn=training_input_fn,
         steps=steps_per_period
     )
     # Take a break and compute predictions.
-    training_probabilities = linear_classifier.predict(input_fn=predict_training_input_fn)
+    training_probabilities = dnn_classifier.predict(input_fn=predict_training_input_fn)
     training_probabilities = np.array([item['probabilities'] for item in training_probabilities])
     
-    validation_probabilities = linear_classifier.predict(input_fn=predict_validation_input_fn)
+    validation_probabilities = dnn_classifier.predict(input_fn=predict_validation_input_fn)
     validation_probabilities = np.array([item['probabilities'] for item in validation_probabilities])
     
     training_log_loss = metrics.log_loss(training_targets, training_probabilities)
@@ -238,15 +241,15 @@ def train_linear_classifier_model(
   plt.savefig("/tmp/fig.png")
 
   # Output model bias + weights
-  print([(v, linear_classifier.get_variable_value(v)) for v in linear_classifier.get_variable_names()])
+  print([(v, dnn_classifier.get_variable_value(v)) for v in dnn_classifier.get_variable_names()])
 
   # Print evaluation metrics
-  evaluation_metrics = linear_classifier.evaluate(input_fn=predict_validation_input_fn)
+  evaluation_metrics = dnn_classifier.evaluate(input_fn=predict_validation_input_fn)
 
   print("AUC on the validation set: %0.2f" % evaluation_metrics['auc'])
   print("Accuracy on the validation set: %0.2f" % evaluation_metrics['accuracy'])
 
-  return linear_classifier
+  return dnn_classifier
 
 """
 End helper fns
@@ -265,10 +268,11 @@ normalized_validation_examples = preprocess_features(normalized_pull_requests_da
 
 validation_targets = preprocess_targets(pull_requests_dataframe.tail(500))
 
-linear_classifier = train_linear_classifier_model(
-    learning_rate = 0.0001,
+dnn_classifier = train_nn_classifier_model(
+    learning_rate = 0.01,
     steps=10000,
     batch_size=200,
+    hidden_units=[6, 6],
     training_examples=normalized_training_examples,
     training_targets=training_targets,
     validation_examples=normalized_validation_examples,
