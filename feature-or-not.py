@@ -277,3 +277,36 @@ dnn_classifier = train_nn_classifier_model(
     training_targets=training_targets,
     validation_examples=normalized_validation_examples,
     validation_targets=validation_targets)
+
+def predict_pr_input_fn(df_data):
+    return tf.estimator.inputs.pandas_input_fn(
+        x=df_data,
+        num_epochs=1,
+       shuffle=False
+    )
+
+# Predict a non-feature PR
+# https://github.com/codeclimate/velocity/pull/5202
+print("Predicting non-feature PR...")
+d = { 'additions_count': [1], 'deletions_count': [3], 'changed_files_count': [1], 'review_cycles_count': [2], 'time_to_review_in_minutes': [14.83] }
+new_pr = pd.DataFrame.from_dict(d)
+
+results = dnn_classifier.predict(
+    input_fn=predict_pr_input_fn(new_pr)
+)
+
+for result in results:
+  print(result)
+
+# Predict a feature PR
+# https://github.com/codeclimate/velocity/pull/5229
+print("Predicting feature PR...")
+d = { 'additions_count': [261], 'deletions_count': [17], 'changed_files_count': [11], 'review_cycles_count': [2], 'time_to_review_in_minutes': [1120.68] }
+new_pr = pd.DataFrame.from_dict(d)
+
+results = dnn_classifier.predict(
+    input_fn=predict_pr_input_fn(new_pr)
+)
+
+for result in results:
+  print(result)
