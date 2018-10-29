@@ -1,0 +1,165 @@
+#!/usr/bin/env ruby
+
+require "fileutils"
+
+require "bundler"
+Bundler.require(:default)
+
+repository = ARGV.shift or raise "Must pass in a GitHub repository (e.g. codeclimate/velocity) as the first argument"
+
+Dotenv.load
+
+DB_PATH = "./dbs/data.sqlite3".freeze
+
+print "Reset database? [yN] "
+FileUtils.rm_rf DB_PATH if gets.chomp.to_s.downcase == "y"
+
+$logger = Logger.new(STDERR)
+$logger.level = Logger::INFO
+
+ActiveRecord::Base.logger = $logger
+
+ActiveRecord::Base.establish_connection(
+  adapter: "sqlite3",
+  database: "./dbs/data.sqlite3",
+)
+
+$logger.info "Creating table if it doesn't exist"
+ActiveRecord::Base.connection.execute %{
+  create table if not exists pull_requests (
+    id integer primary key autoincrement,
+    url text not null,
+    repository_name text not null,
+    api_url text not null,
+    github_id integer not null,
+    number integer not null,
+    title text not null,
+    author_login text not null,
+    github_created_at datetime not null,
+    github_updated_at datetime not null,
+    closed_at datetime,
+    body text,
+    categorized_as_feature_by_human boolean,
+    state varchar(255) not null
+  );
+}
+
+ActiveRecord::Base.connection.execute %{
+  create unique index if not exists index_pull_requests_on_github_id on
+    pull_requests(github_id);
+}
+
+def has_column?(col)
+  row = ActiveRecord::Base.connection.execute("select * from pull_requests limit 1").first
+  return false if row.nil?
+  row.keys.map(&:to_s).map(&:to_sym).include?(col)
+end
+
+[:additions, :deletions, :changed_lines, :files_added, :files_changed, :files_deleted, :removed_lines].each do |col|
+  unless has_column?(col)
+    ActiveRecord::Base.connection.execute %{
+      alter table pull_requests
+        add column #{col} integer;
+    }
+  end
+end
+
+class PullRequest < ActiveRecord::Base
+end
+
+client = Octokit::Client.new(
+  access_token: ENV.fetch("GITHUB_PERSONAL_ACCESS_TOKEN"),
+)
+
+client.auto_paginate = true
+
+class DiffAnalysis < Struct.new(:client, :repository, :pr)
+  def changed_lines
+    @changed_lines ||= patch.changed_lines.count
+  end
+
+  def removed_lines
+    @removed_lines ||= patch.removed_lines.count
+  end
+
+  def additions
+    pr_json.additions
+  end
+
+  def deletions
+    pr_json.deletions
+  end
+
+  private
+
+  def patch
+    @patch ||= begin
+                 diff = client.pull_request(repository, pr.number, accept: "application/vnd.github.patch")
+                 GitDiffParser::Patch.new(diff)
+               end
+  end
+
+  def pr_json
+    @pr_json ||= client.pull_request(repository, pr.number)
+  end
+end
+
+$logger.info "Loading data from GitHub"
+
+["open", "closed"].each do |state|
+  $logger.info "Loading #{state} PRs for #{repository}"
+
+  client.pulls(repository, state: state).each do |pr|
+    $logger.info "Inserting #{pr.html_url}"
+
+    diff_analysis = DiffAnalysis.new(client, repository, pr)
+
+    begin
+      PullRequest.create!(
+        url: pr.html_url,
+        repository_name: repository,
+        api_url: pr.url,
+        github_id: pr.id,
+        number: pr.number,
+        title: pr.title,
+        author_login: pr.user.login,
+        github_created_at: pr.created_at,
+        github_updated_at: pr.updated_at,
+        closed_at: pr.closed_at,
+        body: pr.body,
+        categorized_as_feature_by_human: nil, # will categorize later
+        state: pr.state,
+        # changed_lines: diff_analysis.changed_lines,
+        # removed_lines: diff_analysis.removed_lines,
+        additions: diff_analysis.additions,
+        deletions: diff_analysis.deletions,
+      )
+      $logger.info "... done"
+    rescue ActiveRecord::RecordNotUnique
+      $logger.info "Already existed, updating..."
+
+      pull_request = PullRequest.find_by!(github_id: pr.id)
+      pull_request.update!(
+        url: pr.html_url,
+        repository_name: repository,
+        api_url: pr.url,
+        github_id: pr.id,
+        number: pr.number,
+        title: pr.title,
+        author_login: pr.user.login,
+        github_created_at: pr.created_at,
+        github_updated_at: pr.updated_at,
+        closed_at: pr.closed_at,
+        body: pr.body,
+        state: pr.state,
+        # changed_lines: diff_analysis.changed_lines,
+        # removed_lines: diff_analysis.removed_lines,
+        additions: diff_analysis.additions,
+        deletions: diff_analysis.deletions,
+      )
+      $logger.info "... done"
+    end
+  end
+end
+
+$logger.info "All done"

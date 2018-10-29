@@ -1,0 +1,113 @@
+#!/usr/bin/env ruby
+
+require "readline"
+
+require "bundler"
+Bundler.require(:default)
+
+Dotenv.load
+
+DB_PATH = "./dbs/data.sqlite3".freeze
+
+$logger = Logger.new(STDERR)
+$logger.level = Logger::INFO
+
+ActiveRecord::Base.logger = $logger
+
+ActiveRecord::Base.establish_connection(
+  adapter: "sqlite3",
+  database: "./dbs/data.sqlite3",
+)
+
+class PullRequest < ActiveRecord::Base
+  scope :unclassified, -> { where(categorized_as_feature_by_human: nil) }
+end
+
+class CLI
+  def self.start(pr)
+    new(pr).run
+  end
+
+  def initialize(pr)
+    @pr = pr
+  end
+
+  def run
+    show
+
+    loop do
+      case Readline.readline("> ").to_s.chomp.downcase
+      when "help" then help
+      when "s", "show" then show
+      when "y", "yes"
+        yes!
+        break
+      when "n", "no"
+        no!
+        break
+      when "o", "open"
+        Launchy.open(pr.url)
+      when "e", "exit"
+        return false
+      when "p", "pry" then pry
+      else
+        puts "Skipping for now"
+        break
+      end
+    end
+
+    true
+  rescue Interrupt
+    puts
+    false
+  end
+
+  private
+
+  attr_reader :pr
+
+  def help
+    puts "help/h - show this message"
+    puts "show/s - show PR details preview"
+    puts "yes/y - classify PR as a feature PR"
+    puts "no/n - classify PR as a non-feature PR"
+    puts "open/o - open PR in browser to help classify"
+    puts "(anything else) - skip PR for now"
+  end
+
+  def show
+    puts
+    puts "*" * 40
+    puts "repository: #{pr.repository_name}##{pr.number}"
+    puts "title: #{pr.title}"
+    puts "author: #{pr.author_login}"
+    puts "opened: #{pr.github_created_at.to_date}"
+    puts "size: #{pr.additions.to_i + pr.deletions.to_i} lines"
+  end
+
+  def yes!
+    pr.update!(categorized_as_feature_by_human: true)
+  end
+
+  def no!
+    pr.update!(categorized_as_feature_by_human: false)
+  end
+
+  def pry
+    binding.pry
+  end
+end
+
+total = PullRequest.count
+remaining = PullRequest.unclassified
+
+pct = (100 - remaining.count.to_f / total.to_f * 100).round(2)
+puts "Current progress: #{pct}% (#{total - remaining.count} / #{total} classified)"
+
+remaining.each do |pr|
+  result = CLI.start(pr)
+  if result == false
+    puts 'exiting'
+    exit
+  end
+end

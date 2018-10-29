@@ -1,0 +1,63 @@
+#!/usr/bin/env ruby
+
+require "csv"
+
+require "bundler"
+Bundler.require(:default)
+
+Dotenv.load
+
+DB_PATH = "./dbs/data.sqlite3".freeze
+
+$logger = Logger.new(STDERR)
+$logger.level = Logger::INFO
+
+ActiveRecord::Base.logger = $logger
+
+ActiveRecord::Base.establish_connection(
+  adapter: "sqlite3",
+  database: "./dbs/data.sqlite3",
+)
+
+class PullRequest < ActiveRecord::Base
+end
+
+puts CSV.generate { |csv|
+  csv << [
+    "url",
+    "repository_name",
+    "api_url",
+    "github_id",
+    "number",
+    "title",
+    "author_login",
+    "github_created_at",
+    "github_updated_at",
+    "closed_at",
+    "body",
+    "categorized_as_feature_by_human",
+    "state",
+    "additions",
+    "deletions",
+  ]
+
+  PullRequest.all.each do |pr|
+    csv << [
+      pr.url,
+      pr.repository_name,
+      pr.api_url,
+      pr.github_id,
+      pr.number,
+      pr.title,
+      pr.author_login,
+      pr.github_created_at,
+      pr.github_updated_at,
+      pr.closed_at,
+      pr.body,
+      pr.categorized_as_feature_by_human,
+      pr.state,
+      pr.additions,
+      pr.deletions,
+    ]
+  end
+}
